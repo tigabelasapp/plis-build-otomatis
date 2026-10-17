@@ -1,0 +1,86 @@
+name: Build PLIS ZIP and publish preview
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**.zip'
+      - '.github/workflows/build-preview.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Find and extract source ZIP
+        id: source
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_ZIP=$(find . -maxdepth 1 -type f -name '*.zip' ! -name 'PLIS-dist.zip' -print -quit)
+          if [ -z "${SOURCE_ZIP:-}" ]; then
+            echo 'Tidak menemukan ZIP sumber di root repositori.' >&2
+            exit 1
+          fi
+          mkdir -p _plis_source
+          unzip -q "$SOURCE_ZIP" -d _plis_source
+          PACKAGE_JSON=$(find _plis_source -type f -name package.json -print -quit)
+          if [ -z "${PACKAGE_JSON:-}" ]; then
+            echo 'package.json tidak ditemukan di dalam ZIP.' >&2
+            exit 1
+          fi
+          PROJECT_DIR=$(dirname "$PACKAGE_JSON")
+          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+          echo "Proyek ditemukan di: $PROJECT_DIR"
+
+      - name: Install dependencies and build
+        working-directory: ${{ steps.source.outputs.project_dir }}
+        env:
+          VITE_BASE_PATH: /${{ github.event.repository.name }}/
+        run: |
+          npm install --no-audit --no-fund
+          npm run build
+
+      - name: Package production build ZIP
+        working-directory: ${{ steps.source.outputs.project_dir }}
+        run: zip -qr "$GITHUB_WORKSPACE/PLIS-dist.zip" dist
+
+      - name: Upload downloadable build ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: PLIS-dist-zip
+          path: PLIS-dist.zip
+          retention-days: 30
+
+      - name: Upload site for GitHub Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ${{ steps.source.outputs.project_dir }}/dist
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Deploy preview
+        id: deployment
+        uses: actions/deploy-pages@v4
